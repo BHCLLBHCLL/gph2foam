@@ -1,0 +1,19 @@
+{
+  "fluid_regions": [
+    "FPHPARTS.air_domain",
+    "FPHPARTS.rotation1"
+  ],
+  "solid_regions": [
+    "FPHPARTS.case1"
+  ],
+  "mrf_regions": [{"cellZone":"FPHPARTS.rotation1", "origin":[-0.0678000118994153,-0.002998816632366482,0.08098497073536845], "axis":[0.0, 1.0,0.0], "omega":100}],
+  "heat_sources": {},
+  "materials": {
+    "FPHPARTS.case1": {"rho": 1300, "Cp": 1400, "kappa": 0.2}
+  },
+  "g": [0, -9.81, 0],
+  "initial_conditions": {"T": 300.0, "p": 101325.0},
+  "n_procs": 8,
+  "endTime": 500,
+  "writeInterval": 100
+}

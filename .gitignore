@@ -8,5 +8,10 @@ build/
 dist/
 *.egg-info/
 
-tests/*
+# Large mesh binaries (keep small fixtures trackable via -f)
+tests/*.gph
+tests/*.fph
+tests/*.cgns
 cases/*
+!tests/*.json
+!tests/test_*.py
