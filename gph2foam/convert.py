@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import time
@@ -144,6 +145,9 @@ def convert_gph(
     report_path: str | Path | None = None,
     solid_patterns: list[str] | None = None,
     fluid_patterns: list[str] | None = None,
+    transient: bool = False,
+    fwh: bool = False,
+    sph_path: str | Path | None = None,
     verbose: bool = True,
 ) -> Any:
     """Convert a ``.gph`` file to an OpenFOAM case directory.
@@ -152,6 +156,10 @@ def convert_gph(
       1. GPH -> temporary (or ``cgns_path``) CGNS via gphdecoding/gph2cgns
       2. Repair empty/invalid ZoneBC PointLists (cradlecgns logic)
       3. CGNS -> OpenFOAM via cgns2foam (mono or ``--cht-direct``)
+      4. With ``transient``, read the sibling ``.sph`` and rewrite the
+         case as air-only ``pimpleFoam`` (no solids, no energy).
+      5. With ``fwh``, also write libAcoustics Farassat 1A microphone
+         dictionaries. ``fwh`` implies ``transient``.
 
     Returns the cgns2foam result (``Mesh`` or ``CouplingReport``).
     """
@@ -159,14 +167,55 @@ def convert_gph(
     if not gph_path.is_file():
         raise FileNotFoundError(gph_path)
 
+    if fwh:
+        transient = True
+    if transient and scan_only:
+        flag = "--fwh" if fwh else "--transient"
+        raise ValueError(f"{flag} cannot be combined with --scan")
+
+    physics = None
+    if transient:
+        from .sph import parse_sph
+
+        sph = Path(sph_path) if sph_path else gph_path.with_suffix(".sph")
+        if not sph.is_file():
+            flag = "--fwh" if fwh else "--transient"
+            raise FileNotFoundError(
+                f"{flag} needs an SPH file next to the GPH ({sph}) "
+                "or --sph PATH"
+            )
+        physics = parse_sph(sph)
+        if regions_json is not None and verbose:
+            print(
+                "[gph2foam] --transient: SPH physics replaces --regions "
+                f"({regions_json})"
+            )
+        cht_direct = True
+        if verbose:
+            print(
+                f"[gph2foam] SPH {sph.name}: air-only pimpleFoam, "
+                f"{len(physics.fluid_parts)} fluid part(s), "
+                f"{len(physics.rotations)} rotating zone(s)"
+            )
+
     stem = gph_path.stem
     if out_dir is None:
         out_dir = gph_path.parent / stem
     out_dir = Path(out_dir)
 
     tmp_dir: tempfile.TemporaryDirectory[str] | None = None
+    generated_json: Path | None = None
 
     try:
+        if physics is not None:
+            from .sph import write_regions_json
+
+            fd, json_name = tempfile.mkstemp(prefix="gph2foam_sph_", suffix=".json")
+            os.close(fd)
+            generated_json = Path(json_name)
+            write_regions_json(physics, generated_json, flow_only=True)
+            regions_json = generated_json
+
         if cgns_path is None:
             if keep_cgns:
                 cgns_path = out_dir.parent / f"{stem}.cgns"
@@ -246,6 +295,31 @@ def convert_gph(
             fluid_patterns=fluid_patterns,
         )
 
+        if physics is not None:
+            from .transient_heat import apply_transient_flow
+
+            summary = apply_transient_flow(out_dir, physics)
+            if verbose:
+                n_rot = len(summary["rotations"])
+                print(
+                    "[gph2foam] transient flow: "
+                    f"{summary['solver']}, air only, "
+                    f"endTime {summary['endTime']}, "
+                    f"{n_rot} sliding zone(s)"
+                )
+            if fwh:
+                from .fwh import apply_fwh
+
+                acoustics = apply_fwh(out_dir, physics, summary)
+                if verbose:
+                    print(
+                        "[gph2foam] FWH: Farassat 1A, "
+                        f"{len(acoustics['surfaces'])} source surface(s), "
+                        f"{len(acoustics['observers'])} mics, "
+                        f"rhoInf {acoustics['rhoInf']}, "
+                        f"lib {acoustics['lib']}"
+                    )
+
         if cht_direct and report_path:
             src = Path(out_dir) / "coupling_scan.json"
             if src.is_file():
@@ -259,5 +333,7 @@ def convert_gph(
 
         return result
     finally:
+        if generated_json is not None:
+            generated_json.unlink(missing_ok=True)
         if tmp_dir is not None:
             tmp_dir.cleanup()

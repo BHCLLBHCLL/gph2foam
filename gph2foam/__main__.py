@@ -24,6 +24,10 @@ examples:
   %(prog)s mesh.gph out_case --keep-cgns
   %(prog)s --scan mesh.gph
   %(prog)s --cht-direct mesh.gph out_cht --regions mesh.json
+  %(prog)s mesh.gph out_transient --transient
+  %(prog)s mesh.gph out_transient --transient --sph mesh.sph
+  %(prog)s mesh.gph out_fwh --fwh
+  %(prog)s mesh.gph out_fwh --fwh --sph mesh.sph
   %(prog)s mesh.gph --cgns-only mesh.cgns
 
 environment:
@@ -131,6 +135,36 @@ environment:
         help="Regions/physics sidecar JSON for --cht-direct (or coupling scan).",
     )
     p.add_argument(
+        "--transient",
+        action="store_true",
+        help=(
+            "Build an air-only transient flow case from the GPH and its SPH. "
+            "Implies --cht-direct for the fluid mesh, then drops every solid "
+            "and writes pimpleFoam (Euler, PIMPLE). No energy equation. "
+            "ALE zones become constant/dynamicMeshDict. "
+            "pimpleFoam has no -region option."
+        ),
+    )
+    p.add_argument(
+        "--fwh",
+        action="store_true",
+        help=(
+            "Fresh GPH+SPH conversion to an air-only pimpleFoam case that "
+            "computes microphone noise with libAcoustics Farassat 1A. "
+            "Implies --transient. Each impeller wall is its own FWH "
+            "surface; every other solid wall is one surface named "
+            "laptop_wall. Six observers sit 0.5 m outside the "
+            "mesh bounding box. p is kinematic, so pInf is 0 and rhoInf "
+            "is the SPH density."
+        ),
+    )
+    p.add_argument(
+        "--sph",
+        metavar="PATH",
+        default=None,
+        help="SPH physics file for --transient and --fwh (default: <gph stem>.sph).",
+    )
+    p.add_argument(
         "--report",
         metavar="PATH",
         default=None,
@@ -161,6 +195,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     verbose = not args.quiet
+
+    if args.fwh:
+        args.transient = True
+    if args.transient and (args.cgns_only or args.scan):
+        flag = "--fwh" if args.fwh else "--transient"
+        print(
+            f"error: {flag} cannot be combined with --cgns-only or --scan",
+            file=sys.stderr,
+        )
+        return 2
 
     # CGNS-only path: GPH → CGNS → repair, then exit.
     if args.cgns_only:
@@ -209,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
         report_path=args.report,
         solid_patterns=args.solid_pattern,
         fluid_patterns=args.fluid_pattern,
+        transient=args.transient,
+        fwh=args.fwh,
+        sph_path=args.sph,
         verbose=verbose,
     )
     return 0
